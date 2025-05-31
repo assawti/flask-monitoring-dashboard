@@ -1,0 +1,90 @@
+---
+- name: Deploy Flask Dashboard
+  hosts: web
+  become: yes
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install required packages
+      apt:
+        name:
+          - python3
+          - python3-pip
+          - nginx
+          - git
+          - python3-venv
+        state: present
+
+    - name: Clone the Flask app
+      git:
+        repo: https://github.com/assawti/flask-monitoring-dashboard.git
+        dest: /home/ubuntu/dashboard
+        version: feature/deploy-ansible
+
+    - name: Create Python virtual environment
+      command: python3 -m venv /home/ubuntu/dashboard/venv
+      args:
+        creates: /home/ubuntu/dashboard/venv
+
+    - name: Install Python dependencies
+      pip:
+        requirements: /home/ubuntu/dashboard/requirements.txt
+        virtualenv: /home/ubuntu/dashboard/venv
+
+    - name: Configure Gunicorn systemd service
+      copy:
+        dest: /etc/systemd/system/gunicorn.service
+        content: |
+          [Unit]
+          Description=Gunicorn daemon
+          After=network.target
+
+          [Service]
+          User=ubuntu
+          Group=www-data
+          WorkingDirectory=/home/ubuntu/dashboard
+          ExecStart=/home/ubuntu/dashboard/venv/bin/gunicorn --workers 3 --bind unix:/home/ubuntu/dashboard/app.sock -m 007 app:app
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Start and enable Gunicorn
+      systemd:
+        name: gunicorn
+        enabled: yes
+        state: restarted
+
+    - name: Configure Nginx
+      copy:
+        dest: /etc/nginx/sites-available/dashboard
+        content: |
+          server {
+              listen 80;
+              server_name _;
+
+              location / {
+                  include proxy_params;
+                  proxy_pass http://unix:/home/ubuntu/dashboard/app.sock;
+              }
+          }
+
+    - name: Enable Nginx config
+      file:
+        src: /etc/nginx/sites-available/dashboard
+        dest: /etc/nginx/sites-enabled/dashboard
+        state: link
+        force: yes
+
+    - name: Remove default Nginx config
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Restart Nginx
+      systemd:
+        name: nginx
+        state: restarted
+
